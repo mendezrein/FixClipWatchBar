@@ -9,6 +9,7 @@ macOS menu bar toggle app for `/Users/reinaldomendez/.local/bin/fix-clip-watch`.
 🟠 Orange checkpoint badge in About window  
 📦 LSUIElement bundle `com.rei.fixclipwatchbar`  
 🛠️ Built with ObjC + AppKit (clang), v0.1.0
+⌨️ Global hotkey default `Cmd+Shift+4` toggles the watcher; changeable via menu ("Change Shortcut…"), persisted in UserDefaults
 
 ## What it is
 

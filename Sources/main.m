@@ -2,12 +2,25 @@
 #import <Foundation/Foundation.h>
 
 static NSString *const kScript = @"/Users/reinaldomendez/.local/bin/fix-clip-watch";
+static NSString *const kPrefDomain = @"FixClipWatchBar";
+static NSString *const kPrefKeyCode = @"shortcutKeyCode";
+static NSString *const kPrefModifierFlags = @"shortcutModifierFlags";
+static NSInteger const kDefaultKeyCode = 21;
+static NSUInteger const kDefaultModifierFlags = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+
+@interface ShortcutCaptureView : NSView
+@property (weak, nonatomic) id delegate;
+@end
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
-@property (strong) NSStatusItem *statusItem;
-@property (strong) NSTask *task;
-@property (assign) BOOL running;
-@property (strong) NSWindow *aboutWindow;
+@property (strong, nonatomic) NSStatusItem *statusItem;
+@property (strong, nonatomic) NSTask *task;
+@property (assign, nonatomic) BOOL running;
+@property (strong, nonatomic) NSWindow *aboutWindow;
+@property (strong, nonatomic) NSWindow *shortcutWindow;
+@property (assign, nonatomic) NSInteger shortcutKeyCode;
+@property (assign, nonatomic) NSUInteger shortcutModifierFlags;
+@property (strong, nonatomic) id shortcutMonitor;
 - (void)refreshState;
 - (void)startWatch;
 - (void)stopWatch;
@@ -19,17 +32,40 @@ static NSString *const kScript = @"/Users/reinaldomendez/.local/bin/fix-clip-wat
 - (void)refresh:(id)sender;
 - (void)quit:(id)sender;
 - (void)about:(id)sender;
+- (void)loadShortcut;
+- (void)saveShortcut;
+- (void)registerShortcutMonitor;
+- (void)unregisterShortcutMonitor;
+- (void)changeShortcut:(id)sender;
+- (void)resetShortcut:(id)sender;
+- (BOOL)matchesShortcut:(NSEvent *)event;
+- (void)shortcutCaptureView:(ShortcutCaptureView *)view didCaptureKeyCode:(NSNumber *)keyCode modifierFlags:(NSNumber *)modifierFlags;
+@end
+
+@implementation ShortcutCaptureView
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)event {
+    if ([self.delegate respondsToSelector:@selector(shortcutCaptureView:didCaptureKeyCode:modifierFlags:)]) {
+        [self.delegate shortcutCaptureView:self didCaptureKeyCode:@(event.keyCode) modifierFlags:@(event.modifierFlags)];
+    }
+}
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [self refreshState];
+    [self loadShortcut];
+    [self registerShortcutMonitor];
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     NSStatusBarButton *button = self.statusItem.button;
     button.image = [self statusImage];
     button.action = @selector(showMenu:);
     button.target = self;
+}
+
+- (void)dealloc {
+    [self unregisterShortcutMonitor];
 }
 
 - (NSImage *)statusImage {
@@ -99,6 +135,81 @@ static NSString *const kScript = @"/Users/reinaldomendez/.local/bin/fix-clip-wat
     [[NSFileManager defaultManager] removeItemAtPath:[@"~/.local/run/fix-clip-watch.lock" stringByExpandingTildeInPath] error:nil];
 }
 
+- (void)loadShortcut {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSNumber *kc = [ud objectForKey:[kPrefDomain stringByAppendingString:kPrefKeyCode]];
+    NSNumber *mf = [ud objectForKey:[kPrefDomain stringByAppendingString:kPrefModifierFlags]];
+    self.shortcutKeyCode = kc ? kc.integerValue : kDefaultKeyCode;
+    self.shortcutModifierFlags = mf ? mf.unsignedIntegerValue : kDefaultModifierFlags;
+}
+
+- (void)saveShortcut {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    [ud setObject:@(self.shortcutKeyCode) forKey:[kPrefDomain stringByAppendingString:kPrefKeyCode]];
+    [ud setObject:@(self.shortcutModifierFlags) forKey:[kPrefDomain stringByAppendingString:kPrefModifierFlags]];
+    [ud synchronize];
+}
+
+- (void)registerShortcutMonitor {
+    [self unregisterShortcutMonitor];
+    self.shortcutMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^(NSEvent *event) {
+        if ([self matchesShortcut:event]) {
+            [self toggle:nil];
+        }
+    }];
+}
+
+- (void)unregisterShortcutMonitor {
+    if (self.shortcutMonitor) {
+        [NSEvent removeMonitor:self.shortcutMonitor];
+        self.shortcutMonitor = nil;
+    }
+}
+
+- (BOOL)matchesShortcut:(NSEvent *)event {
+    NSEventModifierFlags f = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    return event.keyCode == self.shortcutKeyCode && f == self.shortcutModifierFlags;
+}
+
+- (void)changeShortcut:(id)sender {
+    if (self.shortcutWindow) return;
+    NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 300, 120)
+                                              styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                                                backing:NSBackingStoreBuffered
+                                                  defer:NO];
+    w.title = @"Change Shortcut";
+    NSView *c = w.contentView;
+    NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 78, 270, 20)];
+    label.stringValue = @"Press a key combination:";
+    label.editable = NO;
+    label.bordered = NO;
+    label.drawsBackground = NO;
+    [c addSubview:label];
+    ShortcutCaptureView *view = [[ShortcutCaptureView alloc] initWithFrame:NSMakeRect(15, 38, 270, 34)];
+    view.delegate = self;
+    [c addSubview:view];
+    [w makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+    self.shortcutWindow = w;
+    [w.contentView.window makeFirstResponder:view];
+}
+
+- (void)resetShortcut:(id)sender {
+    self.shortcutKeyCode = kDefaultKeyCode;
+    self.shortcutModifierFlags = kDefaultModifierFlags;
+    [self saveShortcut];
+    [self registerShortcutMonitor];
+}
+
+- (void)shortcutCaptureView:(ShortcutCaptureView *)view didCaptureKeyCode:(NSNumber *)keyCode modifierFlags:(NSNumber *)modifierFlags {
+    self.shortcutKeyCode = keyCode.integerValue;
+    self.shortcutModifierFlags = modifierFlags.unsignedIntegerValue;
+    [self saveShortcut];
+    [self registerShortcutMonitor];
+    [self.shortcutWindow close];
+    self.shortcutWindow = nil;
+}
+
 - (void)showMenu:(id)sender {
     NSMenu *menu = [self makeMenu];
     self.statusItem.menu = menu;
@@ -119,6 +230,12 @@ static NSString *const kScript = @"/Users/reinaldomendez/.local/bin/fix-clip-wat
     NSMenuItem *refresh = [[NSMenuItem alloc] initWithTitle:@"Refresh" action:@selector(refresh:) keyEquivalent:@"r"];
     refresh.target = self;
     [menu addItem:refresh];
+    NSMenuItem *change = [[NSMenuItem alloc] initWithTitle:@"Change Shortcut..." action:@selector(changeShortcut:) keyEquivalent:@""];
+    change.target = self;
+    [menu addItem:change];
+    NSMenuItem *reset = [[NSMenuItem alloc] initWithTitle:@"Reset Shortcut (Cmd+Shift+4)" action:@selector(resetShortcut:) keyEquivalent:@""];
+    reset.target = self;
+    [menu addItem:reset];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:@"About" action:@selector(about:) keyEquivalent:@""];
     about.target = self;
